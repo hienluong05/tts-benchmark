@@ -249,6 +249,95 @@ Nghĩa là audio đầu chỉ khả dụng sau khoảng 420 ms; tổng thời gi
 6. Report `Streaming native = No` cho hai adapter hiện tại. Không diễn giải
    `first_chunk_duration` là model streaming.
 
+## Offline deployment lên server
+
+Không commit checkpoint vào Git hoặc Git LFS. Tải model ở máy có mạng, kiểm tra
+đủ file, rồi chuyển trực tiếp sang server bằng `scp`, `rsync` hoặc artifact
+storage. Thư mục `models/` đã được `.gitignore` bỏ qua.
+
+### OmniVoice
+
+Tải trước ở máy local:
+
+```powershell
+python -m pip install "huggingface_hub[cli]"
+hf download k2-fsa/OmniVoice --local-dir .\models\OmniVoice
+```
+
+Lệnh này tải model, tokenizer và audio tokenizer vào cùng thư mục. Đóng gói
+không nén để giảm overhead CPU (checkpoint safetensors/Xet vốn đã lớn):
+
+```powershell
+tar -cf omnivoice-model.tar -C .\models OmniVoice
+scp .\omnivoice-model.tar user@server:/opt/tts-benchmark/
+```
+
+Giải nén trên server:
+
+```bash
+cd /opt/tts-benchmark
+mkdir -p models
+tar -xf omnivoice-model.tar -C models
+```
+
+Trỏ adapter đến folder local, không dùng Hugging Face model ID:
+
+```bash
+--adapter omnivoice_adapter:create_adapter \
+--adapter-options '{"model_id":"/opt/tts-benchmark/models/OmniVoice","device":"cuda:0","dtype":"float16"}'
+```
+
+Ép offline để mọi remote request bị fail ngay:
+
+```bash
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+```
+
+Nếu chạy voice cloning, copy cả `reference.wav` và dùng đường dẫn server cho
+`ref_audio`. Có thể kiểm tra transfer bằng checksum trước/sau khi copy:
+
+```powershell
+Get-FileHash .\omnivoice-model.tar -Algorithm SHA256
+```
+
+```bash
+sha256sum /opt/tts-benchmark/omnivoice-model.tar
+```
+
+### FastPitch + HiFi-GAN
+
+Chuyển đủ source, không chỉ checkpoint, vì adapter import text processor từ
+NVIDIA DeepLearningExamples:
+
+```text
+/opt/tts-benchmark/
+├── fastpitch_adapter.py
+├── models/
+│   ├── fastpitch.ts
+│   └── hifigan.ts
+└── third_party/
+    └── DeepLearningExamples/
+        └── PyTorch/SpeechSynthesis/FastPitch/
+```
+
+Ví dụ copy từ máy local:
+
+```powershell
+tar -cf fastpitch-bundle.tar .\models\fastpitch.ts .\models\hifigan.ts .\third_party\DeepLearningExamples
+scp .\fastpitch-bundle.tar user@server:/opt/tts-benchmark/
+```
+
+Trên server, `repo_dir`, `fastpitch_checkpoint` và `hifigan_checkpoint` phải
+là các đường dẫn tuyệt đối Linux trong `--adapter-options`.
+
+### Python dependencies trên server
+
+Model files có thể chuyển giữa Windows và Linux, nhưng không copy virtualenv
+hoặc PyTorch wheel từ Windows sang Linux. Cài dependencies đúng OS/CPU/CUDA của
+server. Nếu server cũng không có Internet, tạo wheelhouse từ một máy **cùng
+nền tảng Linux/CUDA** hoặc dùng internal package mirror; sau đó cài bằng
+`pip install --no-index --find-links /path/to/wheelhouse ...`.
 ## Troubleshooting
 
 | Triệu chứng | Cách xử lý |
