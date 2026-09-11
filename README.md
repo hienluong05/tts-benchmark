@@ -187,6 +187,38 @@ Nếu chỉ chạy một model, chỉ truyền một `--adapter` và một optio
 
 Không truyền đồng thời `duration` và `speed`: OmniVoice ưu tiên duration.
 
+## Application streaming
+
+Bật `--application-streaming` để runner chia mỗi dòng text thành sentence/phrase
+rồi synth **tuần tự**. Audio của phrase đầu được yield ngay khi model synth xong;
+do đó đây là streaming ở cấp ứng dụng, không phải native model streaming.
+
+```powershell
+python .\benchmark_tts.py `
+  --adapter omnivoice_adapter:create_adapter `
+  --adapter-options '{"model_id":"G:\\My Drive\\Documents\\TTS\\benchmark\\models\\OmniVoice","device":"cuda:0","dtype":"float16"}' `
+  --texts .\texts.txt `
+  --application-streaming `
+  --max-segment-chars 120 `
+  --warmup 3 `
+  --repeat 10 `
+  --out-dir .\results-segmented
+```
+
+Splitter ưu tiên `.`, `!`, `?`, `;`, `:` rồi gộp sentence đến giới hạn
+`--max-segment-chars`; câu quá dài mới bị cắt ở whitespace. Dùng cùng giá trị
+này cho tất cả model. Mode này thêm các trường sau vào `runs.*`:
+
+- `streaming_mode=segment_streaming`
+- `segment_count`: số phrase synth cho input
+- `num_chunks`: số audio chunk thực nhận; với hai adapter hiện tại thường bằng
+  `segment_count`
+
+TTFA trong mode này là **TTFA của ứng dụng**: request đến audio của phrase đầu.
+Nó thường thấp hơn full-text TTFA, nhưng có trade-off về ngữ điệu giữa các
+phrase. Report kết quả kèm `Streaming native = No` và
+`Application segment streaming = Yes`; không so sánh trực tiếp TTFA mode này
+với full-text/non-streaming như thể chúng là cùng workload.
 ## Output
 
 `--out-dir results` tạo:

@@ -14,6 +14,7 @@ import csv
 import importlib
 import json
 import math
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass
@@ -58,6 +59,8 @@ class BenchmarkResult:
     num_chunks: int
     num_samples_per_channel: int
     sample_rate: int
+    streaming_mode: str
+    segment_count: int
 
 
 def cuda_sync() -> None:
@@ -91,8 +94,45 @@ def chunk_info(value: Any, default_rate: int) -> tuple[int, int]:
         raise TypeError(f"Unsupported audio chunk: {type(data).__name__}")
     return frames, chunk.sample_rate
 
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;:])\s+")
 
-def benchmark_once(adapter: StreamingTTSAdapter, text: str, text_id: int, run_id: int) -> BenchmarkResult:
+
+def split_for_application_streaming(text: str, max_segment_chars: int) -> list[str]:
+    """Split deterministically at sentence boundaries, then at spaces if needed."""
+    if max_segment_chars < 1:
+        raise ValueError("max_segment_chars must be positive")
+    sentences = [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+    if not sentences:
+        raise ValueError("Cannot segment empty text")
+    segments: list[str] = []
+    current = ""
+    for sentence in sentences:
+        while len(sentence) > max_segment_chars:
+            cut = sentence.rfind(" ", 0, max_segment_chars + 1)
+            cut = cut if cut > 0 else max_segment_chars
+            head, sentence = sentence[:cut].strip(), sentence[cut:].strip()
+            if current:
+                segments.append(current)
+                current = ""
+            if head:
+                segments.append(head)
+        candidate = sentence if not current else f"{current} {sentence}"
+        if len(candidate) <= max_segment_chars:
+            current = candidate
+        else:
+            segments.append(current)
+            current = sentence
+    if current:
+        segments.append(current)
+    return segments
+
+
+def iter_application_stream(adapter: StreamingTTSAdapter, segments: Sequence[str]) -> Iterable[Any]:
+    """Sequential phrase synthesis: the first completed phrase is playable TTFA."""
+    for segment in segments:
+        yield from adapter.stream(segment)
+
+def benchmark_once(adapter: StreamingTTSAdapter, text: str, text_id: int, run_id: int, segments: Sequence[str] | None = None) -> BenchmarkResult:
     """Timer includes request dispatch through receipt of the final audio chunk."""
     cuda_sync()
     started = time.perf_counter()
@@ -102,7 +142,8 @@ def benchmark_once(adapter: StreamingTTSAdapter, text: str, text_id: int, run_id
     total_frames = 0
     chunks = 0
 
-    for raw_chunk in adapter.stream(text):
+    audio_stream = iter_application_stream(adapter, segments) if segments is not None else adapter.stream(text)
+    for raw_chunk in audio_stream:
         # A yielded CUDA tensor is rejected. This sync makes GPU completion part
         # of TTFA and protects timings for normal in-process PyTorch adapters.
         cuda_sync()
@@ -134,6 +175,8 @@ def benchmark_once(adapter: StreamingTTSAdapter, text: str, text_id: int, run_id
         post_ttfa_rtf=(ended - first_audio_at) / duration if duration else math.inf,
         first_chunk_duration_s=first_duration, num_chunks=chunks,
         num_samples_per_channel=total_frames, sample_rate=sample_rate,
+        streaming_mode="segment_streaming" if segments is not None else "model_stream",
+        segment_count=len(segments) if segments is not None else 1,
     )
 
 
@@ -152,15 +195,15 @@ def load_adapter(spec: str, options: dict[str, Any]) -> StreamingTTSAdapter:
 
 def summarize(results: Sequence[BenchmarkResult]) -> list[dict[str, Any]]:
     """Aggregate by model and input. RTF uses ratio of totals, not mean RTF."""
-    groups: dict[tuple[str, int], list[BenchmarkResult]] = {}
+    groups: dict[tuple[str, int, str], list[BenchmarkResult]] = {}
     for item in results:
-        groups.setdefault((item.model, item.text_id), []).append(item)
+        groups.setdefault((item.model, item.text_id, item.streaming_mode), []).append(item)
     rows = []
-    for (model, text_id), group in groups.items():
+    for (model, text_id, streaming_mode), group in groups.items():
         ttfa = [item.ttfa_s for item in group]
         total_duration = sum(item.audio_duration_s for item in group)
         rows.append({
-            "model": model, "text_id": text_id, "runs": len(group), "text": group[0].text,
+            "model": model, "streaming_mode": streaming_mode, "text_id": text_id, "runs": len(group), "segments": group[0].segment_count, "text": group[0].text,
             "ttfa_mean_ms": 1000 * statistics.mean(ttfa),
             "ttfa_p50_ms": 1000 * float(np.percentile(ttfa, 50)),
             "ttfa_p95_ms": 1000 * float(np.percentile(ttfa, 95)),
@@ -191,6 +234,8 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--repeat", type=int, default=10)
     parser.add_argument("--out-dir", type=Path, default=Path("results"))
+    parser.add_argument("--application-streaming", action="store_true", help="Synthesize deterministic text segments sequentially")
+    parser.add_argument("--max-segment-chars", type=int, default=120, help="Maximum characters per application-streamed segment")
     args = parser.parse_args()
     option_blobs = args.adapter_options or ["{}"]
     if len(option_blobs) not in (1, len(args.adapter)):
@@ -203,24 +248,27 @@ def main() -> None:
     texts = [line.strip() for line in args.texts.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not texts:
         raise ValueError("No non-empty test texts")
+    if args.application_streaming and args.max_segment_chars < 1:
+        raise ValueError("--max-segment-chars must be positive")
 
     results: list[BenchmarkResult] = []
     for spec, options in zip(args.adapter, adapter_options):
         adapter = load_adapter(spec, options)
         print(f"\n{adapter.name}: warmup={args.warmup}, repeat={args.repeat}")
+        warmup_segments = split_for_application_streaming(texts[0], args.max_segment_chars) if args.application_streaming else None
         for _ in range(args.warmup):
-            for _chunk in adapter.stream(texts[0]):
+            audio_stream = iter_application_stream(adapter, warmup_segments) if warmup_segments is not None else adapter.stream(texts[0])
+            for _chunk in audio_stream:
                 cuda_sync()
         for text_id, text in enumerate(texts, 1):
             for run_id in range(1, args.repeat + 1):
-                item = benchmark_once(adapter, text, text_id, run_id)
+                segments = split_for_application_streaming(text, args.max_segment_chars) if args.application_streaming else None
+                item = benchmark_once(adapter, text, text_id, run_id, segments)
                 results.append(item)
-                print(f"text={text_id} run={run_id:02d} TTFA={item.ttfa_s * 1000:.1f}ms E2E_RTF={item.e2e_rtf:.4f} chunks={item.num_chunks}")
+                print(f"text={text_id} run={run_id:02d} mode={item.streaming_mode} segments={item.segment_count} TTFA={item.ttfa_s * 1000:.1f}ms E2E_RTF={item.e2e_rtf:.4f} chunks={item.num_chunks}")
     write_outputs(args.out_dir, results)
     print(f"Wrote {len(results)} runs to {args.out_dir.resolve()}")
 
 
 if __name__ == "__main__":
     main()
-
-
