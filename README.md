@@ -14,7 +14,7 @@ OmniVoice trên cùng máy, GPU, precision và workload.
 | File | Vai trò |
 | --- | --- |
 | `benchmark_tts.py` | Runner, đo chỉ số và xuất CSV/JSON. |
-| `fastpitch_adapter.py` | Load FastPitch + HiFi-GAN TorchScript từ NVIDIA DeepLearningExamples. |
+| `fastpitch_adapter.py` | Load FastPitch + HiFi-GAN eager `.pt` từ `third_party/FastPitch`; vẫn hỗ trợ TorchScript. |
 | `omnivoice_adapter.py` | Load `k2-fsa/OmniVoice` bằng Python API. |
 
 ## Metric
@@ -34,8 +34,7 @@ trung bình RTF từng run. Cách này không làm câu ngắn có trọng số 
 - Python 3.10+.
 - PyTorch phù hợp CUDA driver nếu benchmark GPU.
 - `numpy`.
-- FastPitch chỉ: source NVIDIA DeepLearningExamples và checkpoint FastPitch,
-  HiFi-GAN **TorchScript** tương thích.
+- FastPitch chỉ: source local `third_party/FastPitch` và cặp checkpoint FastPitch/HiFi-GAN eager PyTorch `.pt` tương thích.
 - OmniVoice chỉ: package `omnivoice`; lần load đầu sẽ tải model khoảng 3.27 GB.
 
 Tạo môi trường riêng, ví dụ Windows PowerShell:
@@ -92,28 +91,30 @@ cố định `num_step`, `speed`, reference prompt và phiên bản model.
 
 ## Cài FastPitch + HiFi-GAN
 
-Clone NVIDIA reference source:
+Adapter dùng fork đã chỉnh sửa tại `third_party/FastPitch`:
 
-```powershell
-git clone https://github.com/NVIDIA/DeepLearningExamples.git .\third_party\DeepLearningExamples
+```text
+G:\My Drive\Documents\TTS\benchmark\third_party\FastPitch
 ```
 
 Tải checkpoint pretrained từ NVIDIA NGC hoặc dùng checkpoint fine-tune của dự
 án. FastPitch và vocoder phải tương thích mel configuration, nhất là sample
-rate, hop length, số mel bins và text processing. NVIDIA reference inference:
-<https://github.com/NVIDIA/DeepLearningExamples/blob/master/PyTorch/SpeechSynthesis/FastPitch/inference.py>
+rate, hop length, số mel bins và text processing. Adapter mặc định load eager
+PyTorch `.pt` qua đúng `third_party/FastPitch/models.py` và
+`models.load_and_setup_model()`, vì vậy các sửa lỗi trong fork này được dùng.
 
 ### Định dạng checkpoint hiện được hỗ trợ
 
-`fastpitch_adapter.py` hiện dùng `torch.jit.load`, vì vậy yêu cầu:
+Mặc định dùng eager PyTorch:
 
-- `fastpitch_checkpoint`: FastPitch **TorchScript**.
-- `hifigan_checkpoint`: HiFi-GAN **TorchScript**.
+- `checkpoint_format: "pyt"` (hoặc bỏ qua option này)
+- `fastpitch_checkpoint`: FastPitch `.pt` có `state_dict` và config
+- `hifigan_checkpoint`: HiFi-GAN `.pt` có `generator` và config
+- `hifigan_config`: file config JSON, chỉ cần khi checkpoint HiFi-GAN không
+  chứa architecture config
 
-Checkpoint NGC PyTorch `.pt` thông thường không tự động tương thích với adapter
-này. Đừng đổi đuôi file hoặc thử load mù. Nếu checkpoint của bạn là `.pt` eager
-PyTorch, cần thêm loader dựa trên `models.load_and_setup_model()` của NVIDIA,
-hoặc export đúng hai model sang TorchScript từ cùng version source/checkpoint.
+Vẫn có thể dùng TorchScript bằng `checkpoint_format: "ts"`; khi đó cả hai
+checkpoint phải là TorchScript. Không đổi đuôi `.pt` thành `.ts`.
 
 ### Tiếng Việt
 
@@ -147,7 +148,7 @@ dấu nháy kép bên trong.
 ```powershell
 python .\benchmark_tts.py `
   --adapter fastpitch_adapter:create_adapter `
-  --adapter-options '{"repo_dir":"G:\\My Drive\\Documents\\TTS\\benchmark\\third_party\\DeepLearningExamples\\PyTorch\\SpeechSynthesis\\FastPitch","fastpitch_checkpoint":"G:\\models\\fastpitch.ts","hifigan_checkpoint":"G:\\models\\hifigan.ts","device":"cuda","sample_rate":22050,"amp":true}' `
+  --adapter-options '{"repo_dir":"G:\\My Drive\\Documents\\TTS\\benchmark\\third_party\\FastPitch","fastpitch_checkpoint":"G:\\models\\fastpitch.pt","hifigan_checkpoint":"G:\\models\\hifigan.pt","checkpoint_format":"pyt","device":"cuda","sample_rate":22050,"amp":true}' `
   --adapter omnivoice_adapter:create_adapter `
   --adapter-options '{"model_id":"G:\\My Drive\\Documents\\TTS\\benchmark\\models\\OmniVoice","device":"cuda:0","dtype":"float16","ref_audio":"G:\\My Drive\\Documents\\TTS\\benchmark\\reference.wav","ref_text":"Nội dung được đọc trong reference.wav.","generate_options":{"num_step":32,"speed":1.0}}' `
   --texts .\texts.txt `
@@ -164,9 +165,11 @@ Nếu chỉ chạy một model, chỉ truyền một `--adapter` và một optio
 
 | Option | Bắt buộc | Mặc định | Ý nghĩa |
 | --- | --- | --- | --- |
-| `repo_dir` | Có | — | Thư mục `.../PyTorch/SpeechSynthesis/FastPitch`. |
-| `fastpitch_checkpoint` | Có | — | TorchScript FastPitch. |
-| `hifigan_checkpoint` | Có | — | TorchScript HiFi-GAN tương thích. |
+| `repo_dir` | Có | — | Thư mục `third_party/FastPitch` của fork local. |
+| `fastpitch_checkpoint` | Có | — | FastPitch `.pt` eager mặc định; `.ts` khi `checkpoint_format="ts"`. |
+| `hifigan_checkpoint` | Có | — | HiFi-GAN `.pt` eager mặc định; `.ts` khi `checkpoint_format="ts"`. |
+| `checkpoint_format` | Không | `pyt` | `pyt` cho eager `.pt`, hoặc `ts` cho TorchScript. |
+| `hifigan_config` | Không | — | JSON config nếu eager HiFi-GAN checkpoint không chứa config. |
 | `device` | Không | `cuda` | Thiết bị PyTorch. |
 | `sample_rate` | Không | `22050` | Sample rate output thực tế. |
 | `pace` | Không | `1.0` | Tốc độ nói FastPitch. |
@@ -324,7 +327,7 @@ NVIDIA DeepLearningExamples:
 Ví dụ copy từ máy local:
 
 ```powershell
-tar -cf fastpitch-bundle.tar .\models\fastpitch.ts .\models\hifigan.ts .\third_party\DeepLearningExamples
+tar -cf fastpitch-bundle.tar .\models\fastpitch.pt .\models\hifigan.pt .\third_party\FastPitch
 scp .\fastpitch-bundle.tar user@server:/opt/tts-benchmark/
 ```
 
@@ -345,7 +348,7 @@ nền tảng Linux/CUDA** hoặc dùng internal package mirror; sau đó cài b�
 | `ModuleNotFoundError: omnivoice` | Activate venv và chạy `python -m pip install omnivoice`. |
 | OmniVoice download lỗi | Kiểm tra mạng/Hugging Face access; chạy `hf download ...` để tải trước. |
 | `CUDA was requested but is not available` | Cài PyTorch CUDA đúng driver hoặc đặt `device="cpu"` (rất chậm). |
-| `torch.jit.load` lỗi FastPitch | Bạn đang dùng eager `.pt`, không phải TorchScript; xem phần checkpoint format. |
+| FastPitch checkpoint load lỗi | Xác nhận `checkpoint_format`, fork `repo_dir`, và cặp checkpoint/config tương thích. |
 | FastPitch phát âm tiếng Việt sai/lỗi encode | Dùng checkpoint/tokenizer Việt hóa và truyền config text matching checkpoint. |
 | FastPitch / HiFi-GAN mismatch | Dùng đúng cặp model; kiểm tra sample rate, hop length, mel configuration. |
 | TTFA bất thường ở run đầu | Tăng `--warmup`; không đưa cold-start vào summary warmed-run. |
