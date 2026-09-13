@@ -43,7 +43,20 @@ Tạo môi trường riêng, ví dụ Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install numpy
+python -m pip install "setuptools<70" wheel
+```
+
+Cài PyTorch CUDA trước bằng wheel index phù hợp với server. Ví dụ CUDA 12.8:
+
+```powershell
+python -m pip install torch==2.8.0 torchaudio==2.8.0 `
+  --index-url https://download.pytorch.org/whl/cu128
+```
+
+Sau đó cài toàn bộ dependency của benchmark:
+
+```powershell
+python -m pip install -r .\requirements.txt
 ```
 
 Cài PyTorch theo đúng CUDA từ trang PyTorch. Không dùng một lệnh CUDA cố định

@@ -1,0 +1,20 @@
+# Python 3.11.x is recommended.
+# Install torch/torchaudio separately using the server's CUDA wheel index.
+# Example for CUDA 12.8:
+# python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+
+# Keep NumPy below 1.24 for the legacy FastPitch librosa==0.9.0 stack.
+numpy==1.23.5
+scipy
+librosa==0.9.0
+inflect
+matplotlib
+pynvml==11.0.0
+tensorboardX==2.0
+
+dllogger @ git+https://github.com/NVIDIA/dllogger@v1.0.0
+
+# OmniVoice public Python API.
+omnivoice==0.2.1
+huggingface_hub
+soundfile
