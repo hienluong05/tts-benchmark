@@ -6,7 +6,8 @@ available for existing .ts exports. The reference FastPitch + HiFi-GAN pipeline
 is not native streaming: one full waveform is yielded per text segment.
 
 Required: repo_dir, fastpitch_checkpoint, hifigan_checkpoint.
-Optional: checkpoint_format='pyt' (default) or 'ts', hifigan_config when an
+Optional: checkpoint_format='pyt' (default) or 'ts', cmudict_path and
+heteronyms_path for p_arpabet, hifigan_config when an
  eager HiFi-GAN checkpoint does not embed its architecture configuration.
 """
 from __future__ import annotations
@@ -24,7 +25,8 @@ class FastPitchAdapter:
 
     def __init__(self, *, repo_dir: str, fastpitch_checkpoint: str,
                  hifigan_checkpoint: str, checkpoint_format: str = "pyt",
-                 hifigan_config: str | None = None, device: str = "cuda",
+                 hifigan_config: str | None = None, cmudict_path: str | None = None,
+                 heteronyms_path: str | None = None, device: str = "cuda",
                  sample_rate: int = 22050, pace: float = 1.0,
                  speaker: int = 0, symbol_set: str = "english_basic",
                  text_cleaners: str | list[str] = ["english_cleaners_v2"], p_arpabet: float = 1.0,
@@ -44,6 +46,7 @@ class FastPitchAdapter:
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
         try:
+            from common.text import cmudict
             from common.text.text_processing import get_text_processing
             import models
         except ImportError as exc:
@@ -54,6 +57,15 @@ class FastPitchAdapter:
         self.pace = pace
         self.speaker = speaker
         self.amp = amp
+        if p_arpabet > 0.0:
+            cmu_file = Path(cmudict_path) if cmudict_path else root / "cmudict" / "cmudict-0.7b"
+            heteronym_file = Path(heteronyms_path) if heteronyms_path else root / "cmudict" / "heteronyms"
+            if not cmu_file.is_file():
+                raise FileNotFoundError(
+                    f"CMUDict is required when p_arpabet={p_arpabet}; missing {cmu_file}. "
+                    "Download cmudict-0.7b and pass cmudict_path."
+                )
+            cmudict.initialize(str(cmu_file), str(heteronym_file) if heteronym_file.is_file() else None)
         self.text_processor = get_text_processing(symbol_set, text_cleaners, p_arpabet)
         if checkpoint_format == "ts":
             self.fastpitch = models.load_and_setup_ts_model("FastPitch", fastpitch_checkpoint, amp, self.device)
