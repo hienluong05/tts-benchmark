@@ -354,11 +354,138 @@ hoặc PyTorch wheel từ Windows sang Linux. Cài dependencies đúng OS/CPU/CU
 server. Nếu server cũng không có Internet, tạo wheelhouse từ một máy **cùng
 nền tảng Linux/CUDA** hoặc dùng internal package mirror; sau đó cài bằng
 `pip install --no-index --find-links /path/to/wheelhouse ...`.
+## Quy trình chạy trên Linux/GPU server
+
+Các lệnh dưới đây phù hợp với cấu trúc project trên server. Chạy từ thư mục gốc
+`/media/data3/users/luongdth/tts-benchmark` và thay đường dẫn nếu project nằm ở
+vị trí khác.
+
+### 1. Kiểm tra source, model và input
+
+```bash
+cd /media/data3/users/luongdth/tts-benchmark
+wc -l benchmark_tts.py
+python -u benchmark_tts.py --help
+find models/OmniVoice -maxdepth 2 -type f | head
+ls -lh models/nvidia_fastpitch_220224.pt
+ls -lh models/hifigan__pyt_ckpt_mode-finetune_ds-ljs22khz_v21.08.0_amp/hifigan_gen_checkpoint_10000_ft.pt
+ls -lh third_party/FastPitch/cmudict/cmudict-0.7b
+wc -l texts.txt
+```
+
+`texts.txt` là file UTF-8, mỗi dòng một câu. Không dùng `--adapter-options '...'`;
+đó chỉ là placeholder và gây `JSONDecodeError`.
+
+### 2. Cài dependency và kiểm tra GPU
+
+```bash
+conda activate tts-benchmark
+python -m pip install -r requirements.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+python -c "import omnivoice, soxr; print('OmniVoice dependencies OK')"
+```
+
+Nếu package đã cài nhưng `soxr` thiếu, chạy `python -m pip install soxr`.
+Không gõ dính thành `pip install omnivoicesoxr`; hai package này có tên riêng.
+
+### 3. Chuẩn bị CMUdict cho FastPitch
+
+Khi `p_arpabet=1.0`, FastPitch bắt buộc có file CMUdict:
+
+```bash
+cd third_party/FastPitch
+bash scripts/download_cmudict.sh
+cd ../..
+```
+
+Kiểm tra file phải tồn tại tại:
+
+```text
+third_party/FastPitch/cmudict/cmudict-0.7b
+```
+
+Nếu server không có Internet, tải file ở máy có mạng rồi copy vào đúng đường dẫn
+trên server. Có thể truyền đường dẫn khác qua option `cmudict_path`.
+
+### 4. Chạy smoke test FastPitch
+
+Chạy trước một lần để xác nhận checkpoint, tokenizer và CUDA hoạt động:
+
+```bash
+python -u benchmark_tts.py \\
+  --adapter fastpitch_adapter:create_adapter \\
+  --adapter-options '{"repo_dir":"/media/data3/users/luongdth/tts-benchmark/third_party/FastPitch","fastpitch_checkpoint":"/media/data3/users/luongdth/tts-benchmark/models/nvidia_fastpitch_220224.pt","hifigan_checkpoint":"/media/data3/users/luongdth/tts-benchmark/models/hifigan__pyt_ckpt_mode-finetune_ds-ljs22khz_v21.08.0_amp/hifigan_gen_checkpoint_10000_ft.pt","checkpoint_format":"pyt","cmudict_path":"/media/data3/users/luongdth/tts-benchmark/third_party/FastPitch/cmudict/cmudict-0.7b","device":"cuda","sample_rate":22050,"text_cleaners":["english_cleaners_v2"],"p_arpabet":1.0,"amp":true}' \\
+  --texts texts.txt \\
+  --warmup 1 \\
+  --repeat 1 \\
+  --out-dir results-smoke
+```
+
+Kiểm tra mã thoát và output:
+
+```bash
+echo $?
+column -s, -t < results-smoke/summary.csv
+```
+
+### 5. Chạy so sánh FastPitch và OmniVoice
+
+Sau khi smoke test thành công, chạy benchmark đầy đủ với cùng `texts.txt`,
+`warmup`, `repeat`, GPU và precision:
+
+```bash
+python -u benchmark_tts.py \\
+  --adapter fastpitch_adapter:create_adapter \\
+  --adapter-options '{"repo_dir":"/media/data3/users/luongdth/tts-benchmark/third_party/FastPitch","fastpitch_checkpoint":"/media/data3/users/luongdth/tts-benchmark/models/nvidia_fastpitch_220224.pt","hifigan_checkpoint":"/media/data3/users/luongdth/tts-benchmark/models/hifigan__pyt_ckpt_mode-finetune_ds-ljs22khz_v21.08.0_amp/hifigan_gen_checkpoint_10000_ft.pt","checkpoint_format":"pyt","cmudict_path":"/media/data3/users/luongdth/tts-benchmark/third_party/FastPitch/cmudict/cmudict-0.7b","device":"cuda","sample_rate":22050,"text_cleaners":["english_cleaners_v2"],"p_arpabet":1.0,"amp":true}' \\
+  --adapter omnivoice_adapter:create_adapter \\
+  --adapter-options '{"model_id":"/media/data3/users/luongdth/tts-benchmark/models/OmniVoice","device":"cuda:0","dtype":"float16","generate_options":{"num_step":32,"speed":1.0}}' \\
+  --texts texts.txt \\
+  --warmup 3 \\
+  --repeat 10 \\
+  --out-dir results-full
+```
+
+Mỗi adapter phải có đúng một `--adapter-options` ngay sau nó. Nếu chỉ thấy
+`FastPitch+HiFi-GAN` trong CSV thì lệnh chỉ chạy FastPitch hoặc OmniVoice đã lỗi
+khi import/load. Kiểm tra log cuối cùng và chạy lại sau khi sửa dependency.
+
+### 6. Chạy application streaming
+
+Thêm hai flag sau vào lệnh benchmark đầy đủ:
+
+```bash
+--application-streaming \\
+--max-segment-chars 120
+```
+
+Ví dụ output nằm trong `results-application-streaming/`. Đây là application-level
+streaming: runner chia text thành phrase rồi tổng hợp tuần tự. Hai adapter hiện
+tại vẫn trả một waveform hoàn chỉnh cho mỗi phrase, nên không phải native model
+streaming. Với câu ngắn hơn 120 ký tự, `segments=1` và `chunks=1` là bình thường.
+
+### 7. Đọc và lưu kết quả
+
+```bash
+find results-full -maxdepth 1 -type f -ls
+column -s, -t < results-full/summary.csv
+cut -d, -f1 results-full/runs.csv | sort | uniq
+```
+
+`runs.csv` chứa từng run; `summary.csv` chứa aggregate theo model và text.
+`ttfa_*_ms` là latency audio đầu tiên, `e2e_rtf_ratio_of_total` là tổng thời gian
+chia thời lượng audio. RTF nhỏ hơn 1 nghĩa là nhanh hơn realtime. `repeat=1` chỉ
+phù hợp smoke test; báo cáo nên dùng tối thiểu 10 repeats và warmup trước.
 ## Troubleshooting
 
 | Triệu chứng | Cách xử lý |
 | --- | --- |
 | `ModuleNotFoundError: omnivoice` | Activate venv và chạy `python -m pip install omnivoice`. |
+| `ModuleNotFoundError: soxr` hoặc `Could not import module 'HiggsAudioV2TokenizerModel'` | OmniVoice/Transformers cần thư viện audio `soxr`. Chạy `python -m pip install soxr`, hoặc cài lại toàn bộ `python -m pip install -r requirements.txt`. |
+| `ValueError: CMUDict not initialized` | FastPitch đang dùng `p_arpabet > 0` nhưng CMUdict chưa được khởi tạo. Đảm bảo adapter import `from common.text import cmudict` và file `cmudict-0.7b` tồn tại. |
+| `CMUDict is required ... missing .../cmudict-0.7b` | Từ thư mục `third_party/FastPitch`, chạy `bash scripts/download_cmudict.sh`, hoặc truyền `cmudict_path` tới file local. |
+| `NameError: name 'cmudict' is not defined` | Bản adapter cũ thiếu import. Thêm `from common.text import cmudict` trong khối import FastPitch và chạy lại `python -m py_compile fastpitch_adapter.py`. |
+| Lệnh kết thúc với mã `0` nhưng không có thư mục kết quả | Kiểm tra `benchmark_tts.py` không phải file rỗng (`wc -l benchmark_tts.py`), chạy `python -u benchmark_tts.py --help`, và kiểm tra đúng `--out-dir`. |
+| `JSONDecodeError` tại `json.loads` | `--adapter-options` phải là JSON đầy đủ; không dùng placeholder `'...'`. Mỗi `--adapter` cần một `--adapter-options` tương ứng. |
 | OmniVoice download lỗi | Kiểm tra mạng/Hugging Face access; chạy `hf download ...` để tải trước. |
 | `CUDA was requested but is not available` | Cài PyTorch CUDA đúng driver hoặc đặt `device="cpu"` (rất chậm). |
 | FastPitch checkpoint load lỗi | Xác nhận `checkpoint_format`, fork `repo_dir`, và cặp checkpoint/config tương thích. |
