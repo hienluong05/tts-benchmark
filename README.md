@@ -148,7 +148,7 @@ dấu nháy kép bên trong.
 ```powershell
 python .\benchmark_tts.py `
   --adapter fastpitch_adapter:create_adapter `
-  --adapter-options '{"repo_dir":"G:\\My Drive\\Documents\\TTS\\benchmark\\third_party\\FastPitch","fastpitch_checkpoint":"G:\\models\\fastpitch.pt","hifigan_checkpoint":"G:\\models\\hifigan.pt","checkpoint_format":"pyt","device":"cuda","sample_rate":22050,"amp":true}' `
+  --adapter-options '{"repo_dir":"G:\\My Drive\\Documents\\TTS\\benchmark\\third_party\\FastPitch","fastpitch_checkpoint":"G:\\My Drive\\Documents\\TTS\\benchmark\\models\\nvidia_fastpitch_220224.pt","hifigan_checkpoint":"G:\\My Drive\\Documents\\TTS\\benchmark\\models\\hifigan__pyt_ckpt_mode-finetune_ds-ljs22khz_v21.08.0_amp\\hifigan_gen_checkpoint_10000_ft.pt","checkpoint_format":"pyt","device":"cuda","sample_rate":22050,"text_cleaners":["english_cleaners_v2"],"p_arpabet":1.0,"amp":true}' `
   --adapter omnivoice_adapter:create_adapter `
   --adapter-options '{"model_id":"G:\\My Drive\\Documents\\TTS\\benchmark\\models\\OmniVoice","device":"cuda:0","dtype":"float16","ref_audio":"G:\\My Drive\\Documents\\TTS\\benchmark\\reference.wav","ref_text":"Nội dung được đọc trong reference.wav.","generate_options":{"num_step":32,"speed":1.0}}' `
   --texts .\texts.txt `
@@ -175,7 +175,7 @@ Nếu chỉ chạy một model, chỉ truyền một `--adapter` và một optio
 | `pace` | Không | `1.0` | Tốc độ nói FastPitch. |
 | `speaker` | Không | `0` | Speaker ID cho model multi-speaker. |
 | `amp` | Không | `false` | AMP trên CUDA. |
-| `symbol_set`, `text_cleaners`, `p_arpabet` | Không | English defaults | Phải khớp checkpoint/tokenizer. |
+| `symbol_set`, `text_cleaners`, `p_arpabet` | Không | `english_basic`, `["english_cleaners_v2"]`, `1.0` | Phải khớp checkpoint/tokenizer. |
 
 ### OmniVoice
 

@@ -27,7 +27,7 @@ class FastPitchAdapter:
                  hifigan_config: str | None = None, device: str = "cuda",
                  sample_rate: int = 22050, pace: float = 1.0,
                  speaker: int = 0, symbol_set: str = "english_basic",
-                 text_cleaners: str = "english_cleaners", p_arpabet: float = 0.0,
+                 text_cleaners: str | list[str] = ["english_cleaners_v2"], p_arpabet: float = 1.0,
                  amp: bool = False, **_: Any) -> None:
         if checkpoint_format not in {"pyt", "ts"}:
             raise ValueError("checkpoint_format must be 'pyt' or 'ts'")
